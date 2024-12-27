@@ -2,7 +2,7 @@ from  nnfs.datasets import spiral_data
 import numpy as np
 import nnfs
 import matplotlib.pyplot as plt
-from tqdm import tqdm
+import math
 
 nnfs.init()
 
@@ -197,7 +197,7 @@ class Loss_BinaryCrossEntropy(Loss):
         y_pred_clipped = np.clip(y_pred, 1e-7, 1-1e-7)
         sample_losses = -(y_true * np.log(y_pred_clipped) + 
                          (1 - y_true) * np.log(1 - y_pred_clipped))
-        sample_losses = np.mean(sample_losses, axis=-1)  
+        sample_losses = np.mean(sample_losses, axis=-1)  # Use axis=-1 instead of 1
         return sample_losses
     
     def backward(self, dvalues, y_true):
@@ -217,6 +217,7 @@ class Loss_BinaryCrossEntropy(Loss):
         
         # Normalize 
         self.dinputs = self.dinputs / samples
+        
 
 class Loss_MeanSquaredError(Loss):
 
@@ -368,247 +369,245 @@ class Layer_Dropout:
 
 '''Training and testing'''
 
-data = np.loadtxt('fashion-mnist_train.csv', delimiter=',', skiprows=1)
-np.random.shuffle(data)
+import numpy as np
 
-m,n = data.shape
+# Data preparation
+train_data_length = 1024
+batch_size = 64  # Added batch size for training
 
-train = data[1000:m]
-y = train[:,0].astype(int)
-x = train[:, 1:]/255
+# Real data
+train_data = np.zeros((train_data_length, 2))
+train_data[:, 0] = 2 * np.pi * np.random.rand(train_data_length)
+train_data[:, 1] = np.sin(train_data[:, 0])
 
-accuracy_df = []
-loss_df = []
-
-latent_dim = 16
-batch_size = 512
-
-# encoder
-dense1 = Layer_Dense(n - 1,256, weight_regularizer_l2=5e-4,bias_regularizer_l2=5e-4)
+# Discriminator
+dense1 = Layer_Dense(2, 256, weight_regularizer_l2=5e-4, bias_regularizer_l2=5e-4)
 activation1 = Activation_ReLU()
+dropout1 = Layer_Dropout(0.3)  
 
-dense_mu  = Layer_Dense(256,latent_dim, weight_regularizer_l2=5e-4,bias_regularizer_l2=5e-4)
-dense_logvar = Layer_Dense(256,latent_dim, weight_regularizer_l2=5e-4,bias_regularizer_l2=5e-4)
+dense2 = Layer_Dense(256, 128,  weight_regularizer_l2=5e-4, bias_regularizer_l2=5e-4)
+activation2 = Activation_ReLU()
+dropout2 = Layer_Dropout(0.3)
 
-# decoder
-dense3 = Layer_Dense(latent_dim,256, weight_regularizer_l2=5e-4,bias_regularizer_l2=5e-4)
+dense3 = Layer_Dense(128, 64,  weight_regularizer_l2=5e-4, bias_regularizer_l2=5e-4)
 activation3 = Activation_ReLU()
-dense4 = Layer_Dense(256,n-1)
+dropout3 = Layer_Dropout(0.3)
+
+dense4 = Layer_Dense(64, 1)
 activation4 = Activation_Sigmoid()
 
-mse_loss = Loss_BinaryCrossEntropy()
-optimizer = Optimizer_Adam(decay=5e-5, learning_rate=0.001)
+loss_function = Loss_BinaryCrossEntropy()
+d_optimizer = Optimizer_Adam(learning_rate=0.001, decay=5e-5)
 
-episodes = 101
-ep_div = 10
-accuracy_precision = 0.1
-beta = 0.0005
+# Generator
+gen_dense1 = Layer_Dense(2, 16, weight_regularizer_l2=5e-4, bias_regularizer_l2=5e-4)
+gen_activation1 = Activation_ReLU()
 
-num_samples = x.shape[0]
-num_batches = num_samples // batch_size
+gen_dense2 = Layer_Dense(16, 32)
+gen_activation2 = Activation_ReLU()
 
-indices = np.random.permutation(num_samples)
+gen_dense3 = Layer_Dense(32, 2)
+gen_loss = Loss_BinaryCrossEntropy()
+gen_optimizer = Optimizer_Adam(learning_rate=0.001, decay=5e-5)
+
+# Training loop
+episodes = 20001
+
+d_df = []
+g_df = []
+
+import matplotlib.animation as animation
+
+def create_training_animation(num_frames=10, num_samples=1000):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     
-epoch_loss = 0
-epoch_accuracy = 0
+    def animate(frame):
+        ax1.clear()
+        ax2.clear()
+        
+        # Generate samples
+        latent_space_samples = np.random.randn(num_samples, 2)
+        gen_dense1.forward(latent_space_samples)
+        gen_activation1.forward(gen_dense1.output)
+        gen_dense2.forward(gen_activation1.output)
+        gen_activation2.forward(gen_dense2.output)
+        gen_dense3.forward(gen_activation2.output)
+        generated_samples = gen_dense3.output
+        
+        # Plot real data
+        ax1.scatter(train_data[:, 0], train_data[:, 1], c='blue', alpha=0.5, label='Real')
+        ax1.set_title('Real Data')
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.legend()
+        
+        # Plot generated data
+        ax2.scatter(generated_samples[:, 0], generated_samples[:, 1], c='red', alpha=0.5, label='Generated')
+        ax2.set_title(f'Generated Data (Frame {frame})')
+        ax2.set_xlabel('X')
+        ax2.set_ylabel('Y')
+        ax2.legend()
+        
+        plt.tight_layout()
+    
+    anim = animation.FuncAnimation(fig, animate, frames=num_frames, interval=10)
+    plt.show()
 
 
-for ep in tqdm(range(episodes)):
+for ep in range(episodes):
 
-    # random shuffling at start of each episode
-    indices = np.random.permutation(num_samples)
+    # Train Discriminator
+    # create real samples
+    real_samples = train_data[np.random.randint(0, train_data_length, batch_size)]
+    real_labels = np.ones((batch_size, 1))
     
-    epoch_loss = 0
-    epoch_accuracy = 0
+    # create fake samples
+    latent_space_samples = np.random.randn(batch_size, 2)
     
-    # training small batches of random indices 
-    for batch in range(num_batches):
-        start_idx = batch * batch_size
-        end_idx = start_idx + batch_size
-        batch_indices = indices[start_idx:end_idx]
-        batch_x = x[batch_indices]
-        
-        # encoding
-        dense1.forward(batch_x)
-        activation1.forward(dense1.output)
-        
-        # latent layers
-        dense_mu.forward(activation1.output)
-        dense_logvar.forward(activation1.output)
-        mu = dense_mu.output
-        logvar = dense_logvar.output
-        
-        # sample z using reparameterization trick
-        eps = np.random.standard_normal(mu.shape)
-        z = mu + np.exp(0.5 * logvar) * eps
-        
-        # decoding
-        dense3.forward(z)
-        activation3.forward(dense3.output)
-        dense4.forward(activation3.output)
-        activation4.forward(dense4.output)
-        
-        data_loss = mse_loss.calculate(activation4.output, batch_x)
-        kl_loss = -0.5 * np.mean(np.sum(1 + logvar - mu**2 - np.exp(logvar), axis=1))
-        regularization_loss = (mse_loss.reg_loss(dense1) + mse_loss.reg_loss(dense_mu) + 
-                             mse_loss.reg_loss(dense_logvar) + mse_loss.reg_loss(dense3) + 
-                             mse_loss.reg_loss(dense4))
-        
-        loss = data_loss + regularization_loss + (kl_loss * beta)
-        predictions = activation4.output
-        accuracy = np.mean(np.absolute(predictions - batch_x) < accuracy_precision)
-        
-        epoch_loss += loss
-        epoch_accuracy += accuracy
-        
-        # backward pass
-        mse_loss.backward(activation4.output, batch_x)
-        activation4.backward(mse_loss.dinputs)
-        dense4.backward(activation4.dinputs)
-        activation3.backward(dense4.dinputs)
-        dense3.backward(activation3.dinputs)
-        
-        dmu = mu * beta
-        dlogvar = 0.5 * (np.exp(logvar) - 1) * beta
-        dz = dense3.dinputs
-        dmu += dz
-        dlogvar += dz * eps * np.exp(0.5 * logvar)
-        
-        dense_mu.backward(dmu)
-        dense_logvar.backward(dlogvar)
-        activation1.backward(dense_mu.dinputs + dense_logvar.dinputs)
-        dense1.backward(activation1.dinputs)
-        
-        # Update parameters
-        optimizer.pre_update_params()
-        optimizer.update_params(dense1)
-        optimizer.update_params(dense_mu)
-        optimizer.update_params(dense_logvar)
-        optimizer.update_params(dense3)
-        optimizer.update_params(dense4)
-        optimizer.post_update_params()
-    
-    # Calculate average loss and accuracy for the epoch
-    epoch_loss /= num_batches
-    epoch_accuracy /= num_batches
-    
-    if not ep % ep_div:
-        print(f'ep: {ep}, acc: {epoch_accuracy:.3f}, total_loss: {loss:.3f}')
-        print(f'data_loss: {data_loss:.3f}, kl_loss: {kl_loss*beta:.3f}, reg_loss: {regularization_loss:.3f}')
-        accuracy_df.append(epoch_accuracy)
-        loss_df.append(epoch_loss)
+    # fake samples generation
+    gen_dense1.forward(latent_space_samples)
+    gen_activation1.forward(gen_dense1.output)
+    gen_dense2.forward(gen_activation1.output)
+    gen_activation2.forward(gen_dense2.output)
+    gen_dense3.forward(gen_activation2.output)
 
-ep_range = np.arange(0, episodes, ep_div) 
+    fake_samples = gen_dense3.output
+    fake_labels = np.zeros((batch_size, 1))
+    
+    # Combine real and fake samples
+    all_samples = np.vstack((real_samples, fake_samples))
+    all_labels = np.vstack((real_labels, fake_labels))
+    
+    # Train discriminator
+    dense1.forward(all_samples)
+    activation1.forward(dense1.output)
+    dropout1.forward(activation1.output)
+    
+    dense2.forward(dropout1.output)
+    activation2.forward(dense2.output)
+    dropout2.forward(activation2.output)
+    
+    dense3.forward(dropout2.output)
+    activation3.forward(dense3.output)
+    dropout3.forward(activation3.output)
+    
+    dense4.forward(dropout3.output)
+    activation4.forward(dense4.output)
+    
+    # Calculate discriminator loss
+    d_loss_fxn = loss_function.calculate(activation4.output, all_labels)
+    d_reg_loss = loss_function.reg_loss(dense1) + loss_function.reg_loss(dense2) + loss_function.reg_loss(dense3) + loss_function.reg_loss(dense4) 
+    d_loss = d_loss_fxn + d_reg_loss
+    
+    # Discriminator backward pass
+    loss_function.backward(activation4.output, all_labels)
+    activation4.backward(loss_function.dinputs)
+    dense4.backward(activation4.dinputs)
+    
+    dropout3.backward(dense4.dinputs)
+    activation3.backward(dropout3.dinputs)
+    dense3.backward(activation3.dinputs)
+    
+    dropout2.backward(dense3.dinputs)
+    activation2.backward(dropout2.dinputs)
+    dense2.backward(activation2.dinputs)
+    
+    dropout1.backward(dense2.dinputs)
+    activation1.backward(dropout1.dinputs)
+    dense1.backward(activation1.dinputs)
+    
+    # Update discriminator
+    d_optimizer.pre_update_params()
+    d_optimizer.update_params(dense1)
+    d_optimizer.update_params(dense2)
+    d_optimizer.update_params(dense3)
+    d_optimizer.update_params(dense4)
+    d_optimizer.post_update_params()
+    
+    # Train Generator
+    latent_space_samples = np.random.randn(batch_size, 2)
+    
+    # Generator forward pass
+    gen_dense1.forward(latent_space_samples)
+    gen_activation1.forward(gen_dense1.output)
+    gen_dense2.forward(gen_activation1.output)
+    gen_activation2.forward(gen_dense2.output)
+    gen_dense3.forward(gen_activation2.output)
+    
+    # Pass generated samples through discriminator
+    dense1.forward(gen_dense3.output)
+    activation1.forward(dense1.output)
+    dropout1.forward(activation1.output)
+    dense2.forward(dropout1.output)
+    activation2.forward(dense2.output)
+    dropout2.forward(activation2.output)
+    dense3.forward(dropout2.output)
+    activation3.forward(dense3.output)
+    dropout3.forward(activation3.output)
+    dense4.forward(dropout3.output)
+    activation4.forward(dense4.output)
+    
+    # Calculate generator loss (wants discriminator to predict 1s)
+    g_loss_fxn = loss_function.calculate(activation4.output, real_labels)
+    g_reg_loss = loss_function.reg_loss(gen_dense1) + loss_function.reg_loss(gen_dense2) + loss_function.reg_loss(gen_dense3) 
+    g_loss = g_loss_fxn + g_reg_loss
+
+    # Generator backward pass
+    loss_function.backward(activation4.output, real_labels)
+    
+    # Propagate back through discriminator
+    activation4.backward(loss_function.dinputs)
+    dense4.backward(activation4.dinputs)
+    dropout3.backward(dense4.dinputs)
+    activation3.backward(dropout3.dinputs)
+    dense3.backward(activation3.dinputs)
+    dropout2.backward(dense3.dinputs)
+    activation2.backward(dropout2.dinputs)
+    dense2.backward(activation2.dinputs)
+    dropout1.backward(dense2.dinputs)
+    activation1.backward(dropout1.dinputs)
+    dense1.backward(activation1.dinputs)
+    
+    # Propagate back through generator
+    gen_dense3.backward(dense1.dinputs)
+    gen_activation2.backward(gen_dense3.dinputs)
+    gen_dense2.backward(gen_activation2.dinputs)
+    gen_activation1.backward(gen_dense2.dinputs)
+    gen_dense1.backward(gen_activation1.dinputs)
+    
+    # Update generator
+    gen_optimizer.pre_update_params()
+    gen_optimizer.update_params(gen_dense1)
+    gen_optimizer.update_params(gen_dense2)
+    gen_optimizer.update_params(gen_dense3)
+    gen_optimizer.post_update_params()
+
+    d_df.append(d_loss)
+    g_df.append(g_loss)
+    
+    # Print progress
+    if ep % 100 == 0:
+        print(f"Epoch: {ep}, Discriminator Loss: {d_loss:.3f}, Generator Loss: {g_loss:.3f}")
+
+ep_range = np.arange(0, episodes, 1) 
 plt.figure(figsize=(10, 4))
 
 # Plot accuracy
 plt.subplot(1, 2, 1)
-plt.plot(ep_range, accuracy_df, label='accuracy')
+plt.plot(ep_range, d_df, label='Discriminant Loss')
 plt.xlabel('episodes')
-plt.ylabel('Accuracy')
-plt.title('Accuracy over Time')
+plt.ylabel('Loss')
+plt.title('Discriminant Loss over Time')
 plt.legend()
 
 plt.subplot(1, 2, 2)
-plt.plot(ep_range, loss_df, label='loss')
+plt.plot(ep_range, g_df, label='Generator Loss')
 plt.xlabel('episodes')
 plt.ylabel('Loss')
-plt.title('Loss over Time')
+plt.title('Generator Loss over Time')
 plt.legend()
 
-# Test data preparation
-test = data[0:1000]
-x_test = test[:, 1:]/255
+plt.show()
 
-# Run test data through VAE
-# Encoding
-dense1.forward(x_test)
-activation1.forward(dense1.output)
 
-# Get mu and logvar
-dense_mu.forward(activation1.output)
-dense_logvar.forward(activation1.output)
-
-mu = dense_mu.output
-logvar = dense_logvar.output
-
-# Sample z using reparameterization trick
-z = mu + np.exp(0.5 * logvar) * np.random.standard_normal(mu.shape)
-
-# Decoding
-dense3.forward(z)
-activation3.forward(dense3.output)
-dense4.forward(activation3.output)
-activation4.forward(dense4.output)
-
-# Get reconstruction loss
-reconstructed = activation4.output
-reconstruction_loss = mse_loss.calculate(reconstructed, x_test)
-kl_loss = -0.5 * np.mean(np.sum(1 + logvar - mu**2 - np.exp(logvar), axis=1))
-total_loss = reconstruction_loss + kl_loss*beta
-
-print(f'Test reconstruction loss: {reconstruction_loss:.3f}')
-print(f'Test KL loss: {kl_loss*beta:.3f}')
-print(f'Test total loss: {total_loss:.3f}')
-
-# Visualization functions
-def plot_reconstruction(x_original, x_reconstructed, index):
-    plt.figure(figsize=(8, 4))
-    
-    # Original image
-    plt.subplot(1, 2, 1)
-    plt.gray()
-    plt.imshow(x_original[index].reshape((28, 28)) * 255)
-    plt.title('Original')
-    plt.axis('off')
-    
-    # Reconstructed image
-    plt.subplot(1, 2, 2)
-    plt.gray()
-    plt.imshow(x_reconstructed[index].reshape((28, 28)) * 255)
-    plt.title('Reconstructed')
-    plt.axis('off')
-    
-    plt.show()
-
-# Add function to generate new samples from the latent space
-def generate_samples(n_samples=3):
-    # Sample from standard normal distribution
-    z_samples = np.random.normal(0, 1, (n_samples, mu.shape[1]))
-    
-    # Decode the samples
-    dense3.forward(z_samples)
-    activation3.forward(dense3.output)
-    dense4.forward(activation3.output)
-    activation4.forward(dense4.output)
-    
-    generated = activation4.output
-    
-    # Plot generated samples
-    plt.figure(figsize=(12, 4))
-    for i in range(n_samples):
-        plt.subplot(1, n_samples, i+1)
-        plt.gray()
-        plt.imshow(generated[i].reshape((28, 28)) * 255)
-        plt.title(f'Generated {i+1}')
-        plt.axis('off')
-    plt.show()
-
-# Show reconstructions
-print("\nReconstructions:")
-for i in range(3):
-    plot_reconstruction(x_test, reconstructed, i)
-
-# Show generated samples
-print("\nGenerated samples from random latent vectors:")
-generate_samples(3)
-
-# If you have 2D latent space, you can visualize it
-if mu.shape[1] == 2:
-    plt.figure(figsize=(10, 10))
-    plt.scatter(mu[:, 0], mu[:, 1], c=test[:, 0], cmap='tab10')
-    plt.colorbar()
-    plt.title('Latent Space Visualization')
-    plt.xlabel('First Latent Dimension')
-    plt.ylabel('Second Latent Dimension')
-    plt.show()
+create_training_animation()
