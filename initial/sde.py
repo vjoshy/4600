@@ -78,7 +78,6 @@ def drift(x, t):
     
 #Time-dependent diffusion coefficient - set to exp(t) follwing Song Y. article
 def diffusion(t):
-    
     return np.exp(t)
 
 # score function
