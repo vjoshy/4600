@@ -66,7 +66,7 @@ class ReverseSDESimulator:
 
             #  brownian motion in reverse time
             dw_bar = np.sqrt(self.dt) * np.random.normal(0,1, (n_traj, prior.shape[1]))  
-            reverse_drift = -drift + (diffusion**2)* score
+            reverse_drift = drift - (diffusion**2)* score
             dx = (reverse_drift * self.dt) + (diffusion *  dw_bar)
 
             x[:, i + 1] = x[:,i] + dx
@@ -82,12 +82,15 @@ def diffusion(t):
 
 # score function
 def score_fn(x, target_mean, t): 
-    var_t = (np.exp(2*t) - 1)/2
-    return -(x - target_mean) / (var_t + 1e-6)
+    var_t = ((np.exp(2*t) - 1)/2) + 0.01
+    return (x - target_mean) / (var_t)
 
 # setup
 t_span = (0,1)
 n_samples = 1000
+
+
+print(t_span)
 
 
 # current state
@@ -126,7 +129,7 @@ for i in range(n_samples):
 plt.title('Reverse SDE Trajectories')
 plt.xlabel('Time')
 plt.ylabel('X(t)')
-#plt.legend()
+
 
 plt.subplot(133)
 plt.hist(f_trajectories[:, 0], bins=10, alpha=1, label='Original X1', density=True)
@@ -138,3 +141,42 @@ plt.legend()
 
 plt.tight_layout()
 plt.show()
+
+import seaborn as sns
+
+# Times to compare
+compare_times = [0.0, 0.4, 0.8, 1.0]
+compare_indices = [np.argmin(np.abs(sde.t - t)) for t in compare_times]
+
+print(compare_indices)
+
+plt.figure(figsize=(15, len(compare_times) * 5))
+
+for idx, t_idx in enumerate(compare_indices):
+    t = sde.t[t_idx]
+    
+    # Forward and reverse values at time t
+    forward_values = f_trajectories[:, t_idx, 0]
+    reverse_values = r_trajectories[:, -(t_idx + 1), 0]
+    
+    # Histogram Comparison
+    plt.subplot(len(compare_times), 2, 2 * idx + 1)
+    plt.hist(forward_values, bins=50, alpha=0.7, label='Forward SDE', density=True)
+    plt.hist(reverse_values, bins=50, alpha=0.7, label='Reverse SDE', density=True)
+    plt.title(f'Distribution Comparison at t={round(t, 2)}')
+    plt.xlabel('X(t)')
+    plt.ylabel('Density')
+    plt.legend()
+
+    # KDE Comparison
+    plt.subplot(len(compare_times), 2, 2 * idx + 2)
+    sns.kdeplot(forward_values, label='Forward SDE', fill=True, alpha=0.5)
+    sns.kdeplot(reverse_values, label='Reverse SDE', fill=True, alpha=0.5)
+    plt.title(f'KDE Comparison at t={round(t, 2)}')
+    plt.xlabel('X(t)')
+    plt.ylabel('Density')
+    plt.legend()
+
+plt.tight_layout()
+plt.show()
+
